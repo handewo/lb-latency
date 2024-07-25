@@ -1,0 +1,12 @@
+# seconds
+check_interval = 5
+# seconds
+check_timeout = 15
+
+[[proxys]]
+frontend = 5555
+backend_addrs = ["192.168.1.1:80", "192.168.1.2:80"]
+
+[[proxys]]
+frontend = 3333
+backend_addrs = ["192.168.2.1:80", "192.168.2.2:80"]
