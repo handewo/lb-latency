@@ -24,22 +24,27 @@ async fn main() {
 
     let cfg = config::load_config(args.config);
 
-    let mut proxys = Vec::new();
+    let mut proxys = Vec::with_capacity(cfg.proxys.len());
     for pc in cfg.proxys.iter() {
-        let mut backend_addrs = Vec::new();
-        let mut back_traffic = Vec::new();
+        let len_addrs = pc.backend_addrs.len();
+        let mut backend_addrs = Vec::with_capacity(len_addrs);
+        let mut back_traffic = Vec::with_capacity(len_addrs);
+        let mut last_latency = Vec::with_capacity(len_addrs);
         for addr in pc.backend_addrs.iter() {
             backend_addrs.push(Arc::new(addr.clone()));
             back_traffic.push(Arc::new(proxy::Traffic {
                 send: AtomicU64::new(0),
                 recv: AtomicU64::new(0),
             }));
+            last_latency.push(AtomicU64::new(0))
         }
+
         proxys.push(Arc::new(proxy::Proxy {
             frontend: pc.frontend.clone(),
             index: AtomicUsize::new(0),
             backend_addrs,
             back_traffic,
+            last_latency,
         }));
     }
     let proxys: Arc<proxy::Proxys> = Arc::new(proxy::Proxys(proxys));

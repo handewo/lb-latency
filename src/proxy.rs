@@ -22,6 +22,7 @@ pub struct Proxy {
     pub index: AtomicUsize,
     pub backend_addrs: Vec<Arc<String>>,
     pub back_traffic: Vec<Arc<Traffic>>,
+    pub last_latency: Vec<AtomicU64>,
 }
 
 pub struct Traffic {
@@ -73,24 +74,24 @@ impl Proxy {
                 },
             )));
         }
-        let mut outputs = Vec::with_capacity(tasks.len());
-        for task in tasks {
-            outputs.push(task.await.unwrap());
-        }
-
-        let mut res = Vec::new();
-        for (i, d) in outputs.into_iter().enumerate() {
-            let v = d.unwrap_or_else(|_| {
+        let mut min_dur = u64::MAX;
+        let mut min_i = self.index.load(Ordering::SeqCst);
+        let ori_i = min_i;
+        for (i, task) in tasks.into_iter().enumerate() {
+            let dur = task.await.unwrap().unwrap_or_else(|_| {
                 debug!("check backend: {} timeout", self.backend_addrs[i]);
                 u64::MAX
             });
-            res.push((i, v))
+            self.last_latency[i].store(dur, Ordering::SeqCst);
+            if dur < min_dur {
+                min_i = i;
+                min_dur = dur;
+            }
         }
-        let (i, d) = res.iter().min_by_key(|x| x.1).unwrap();
 
-        if *d != u64::MAX && *i != self.index.load(Ordering::SeqCst) {
-            self.index.store(*i, Ordering::SeqCst);
-            debug!("{} switch to faster backend {i}", self.frontend);
+        if min_dur != u64::MAX && min_i != ori_i {
+            self.index.store(min_i, Ordering::SeqCst);
+            debug!("{} switch to faster backend {min_i}", self.frontend);
         }
     }
 
@@ -102,10 +103,11 @@ impl Proxy {
             let addr = Arc::clone(&self.backend_addrs[i]);
             res.push_str(
                 format!(
-                    "{{\"{}\":{{\"send\":{},\"recv\":{}}}}},",
+                    "{{\"{}\":{{\"send\":{},\"recv\":{},\"last_latency\":{}}}}},",
                     addr,
                     t.send.load(Ordering::SeqCst),
-                    t.recv.load(Ordering::SeqCst)
+                    t.recv.load(Ordering::SeqCst),
+                    self.last_latency[i].load(Ordering::SeqCst)
                 )
                 .as_str(),
             );
