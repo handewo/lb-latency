@@ -4,6 +4,7 @@ use std::path::Path;
 
 #[derive(Deserialize)]
 pub struct Config {
+    pub status_addr: String,
     pub check_interval: u64,
     pub check_timeout: u64,
     pub proxys: Vec<ProxyCfg>,

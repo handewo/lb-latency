@@ -3,6 +3,8 @@ check_interval = 5
 # seconds
 check_timeout = 15
 
+status_addr = "127.0.0.1:3030"
+
 [[proxys]]
 frontend = 5555
 backend_addrs = ["192.168.1.1:80", "192.168.1.2:80"]
