@@ -12,7 +12,7 @@ pub struct Config {
 
 #[derive(Deserialize)]
 pub struct ProxyCfg {
-    pub frontend: u16,
+    pub frontend: String,
     pub backend_addrs: Vec<String>,
 }
 

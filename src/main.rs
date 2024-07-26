@@ -36,7 +36,7 @@ async fn main() {
             }));
         }
         proxys.push(Arc::new(proxy::Proxy {
-            frontend: pc.frontend,
+            frontend: pc.frontend.clone(),
             index: AtomicUsize::new(0),
             backend_addrs,
             back_traffic,
@@ -53,9 +53,10 @@ async fn main() {
             }
         });
         let p2 = Arc::clone(proxy);
+        let addr = p2.frontend.clone();
         // Bind the listener to the address
         tokio::spawn(async move {
-            let listener = TcpListener::bind(("127.0.0.1", p2.frontend)).await.unwrap();
+            let listener = TcpListener::bind(addr).await.unwrap();
             loop {
                 // The second item contains the IP and port of the new connection.
                 if let Ok((socket, addr)) = listener.accept().await {

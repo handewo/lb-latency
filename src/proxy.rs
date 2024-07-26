@@ -18,7 +18,7 @@ static RESP_EXPECT: &[u8] = &[
 ];
 
 pub struct Proxy {
-    pub frontend: u16,
+    pub frontend: String,
     pub index: AtomicUsize,
     pub backend_addrs: Vec<Arc<String>>,
     pub back_traffic: Vec<Arc<Traffic>>,
