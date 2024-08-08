@@ -1,5 +1,5 @@
 use clap::Parser;
-use log::{debug, error};
+use log::{debug, error, info};
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, AtomicUsize};
 use std::sync::Arc;
@@ -61,7 +61,7 @@ async fn main() {
         let addr = p2.frontend.clone();
         // Bind the listener to the address
         tokio::spawn(async move {
-            let listener = TcpListener::bind(addr).await.unwrap();
+            let listener = try_binding(&addr).await;
             loop {
                 // The second item contains the IP and port of the new connection.
                 if let Ok((socket, addr)) = listener.accept().await {
@@ -87,5 +87,20 @@ async fn main() {
             error!("Unable to listen for shutdown signal: {}", err);
             // we also shut down in case of error
         }
+    }
+}
+
+async fn try_binding(addr: &str) -> TcpListener {
+    loop {
+        match TcpListener::bind(addr).await {
+            Ok(l) => {
+                info!("bind {} successfully", addr);
+                return l;
+            }
+            Err(e) => {
+                error!("bind {addr} error: {e}");
+                tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+            }
+        };
     }
 }

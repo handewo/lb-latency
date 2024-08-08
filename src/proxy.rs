@@ -7,15 +7,10 @@ use tokio::net::TcpStream;
 use tokio::time::{timeout, Duration, Instant};
 
 // header "GET / HTTP/1.0\nHOST: 127.0.0.1\n\n"
-static REQ_HEADER: &[u8] = &[
-    71u8, 69u8, 84u8, 32u8, 47u8, 32u8, 72u8, 84u8, 84u8, 80u8, 47u8, 49u8, 46u8, 48u8, 10u8, 72u8,
-    79u8, 83u8, 84u8, 58u8, 32u8, 49u8, 50u8, 55u8, 46u8, 48u8, 46u8, 48u8, 46u8, 49u8, 10u8, 10u8,
-];
+static REQ_HEADER: &[u8] = b"GET / HTTP/1.0\nHOST: 127.0.0.1\n\n";
 
 //response "HTTP/1.1 200 OK"
-static RESP_EXPECT: &[u8] = &[
-    72u8, 84u8, 84u8, 80u8, 47u8, 49u8, 46u8, 49u8, 32u8, 50u8, 48u8, 48u8, 32u8, 79u8, 75u8,
-];
+static RESP_EXPECT: &[u8] = b"HTTP/1.1 200 OK";
 
 pub struct Proxy {
     pub frontend: String,
@@ -132,8 +127,8 @@ impl Proxys {
     }
 }
 pub async fn process(mut socket: TcpStream, proxy: Arc<Proxy>) {
-    let mut s_buf = vec![0; 1024];
-    let mut b_buf = vec![0; 1024];
+    let mut s_buf = vec![0; 16384];
+    let mut b_buf = vec![0; 16384];
     let (back_tfc, back_addr) = proxy.fatest_backend();
 
     let mut back_stream = match TcpStream::connect(back_addr.as_str()).await {
