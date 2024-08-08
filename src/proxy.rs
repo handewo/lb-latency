@@ -46,7 +46,7 @@ impl Proxy {
                     let mut stream = match TcpStream::connect(addr.as_str()).await {
                         Ok(s) => s,
                         Err(e) => {
-                            error!("check failed when build connection with {addr}: {e}");
+                            warn!("check failed when build connection with {addr}: {e}");
                             return u64::MAX;
                         }
                     };
@@ -56,7 +56,7 @@ impl Proxy {
                         .unwrap_or_else(|e| warn!("check falied when send request to {addr}: {e}"));
                     let mut buf = vec![0; 256];
                     if let Err(e) = stream.read(&mut buf).await {
-                        error!("read error when check {addr}: {e}");
+                        warn!("read error when check {addr}: {e}");
                         return u64::MAX;
                     };
                     let duration = start.elapsed().as_micros() as u64;
@@ -74,7 +74,7 @@ impl Proxy {
         let ori_i = min_i;
         for (i, task) in tasks.into_iter().enumerate() {
             let dur = task.await.unwrap().unwrap_or_else(|_| {
-                debug!("check backend: {} timeout", self.backend_addrs[i]);
+                warn!("check backend: {} timeout", self.backend_addrs[i]);
                 u64::MAX
             });
             self.last_latency[i].store(dur, Ordering::SeqCst);

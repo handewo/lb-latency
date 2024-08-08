@@ -1,5 +1,7 @@
+use chrono::Local;
 use clap::Parser;
 use log::{debug, error, info};
+use std::io::Write;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, AtomicUsize};
 use std::sync::Arc;
@@ -19,7 +21,19 @@ struct Args {
 
 #[tokio::main]
 async fn main() {
-    env_logger::builder().init();
+    env_logger::builder()
+        .default_format()
+        .format(|buf, record| {
+            writeln!(
+                buf,
+                "[{} {:<5} {}] {}",
+                Local::now().format("%Y-%m-%dT%H:%M:%S"),
+                record.level(),
+                record.module_path().unwrap_or(""),
+                record.args()
+            )
+        })
+        .init();
     let args = Args::parse();
 
     let cfg = config::load_config(args.config);
