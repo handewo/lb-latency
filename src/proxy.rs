@@ -12,6 +12,8 @@ static REQ_HEADER: &[u8] = b"GET / HTTP/1.0\nHOST: 127.0.0.1\n\n";
 //response "HTTP/1.1 200 OK"
 static RESP_EXPECT: &[u8] = b"HTTP/1.1 200 OK";
 
+const BUF_LENGTH: usize = 16384;
+
 pub struct Proxy {
     pub frontend: String,
     pub index: AtomicUsize,
@@ -126,50 +128,71 @@ impl Proxys {
         resp
     }
 }
-pub async fn process(mut socket: TcpStream, proxy: Arc<Proxy>) {
-    let mut s_buf = vec![0; 16384];
-    let mut b_buf = vec![0; 16384];
-    let (back_tfc, back_addr) = proxy.fatest_backend();
 
-    let mut back_stream = match TcpStream::connect(back_addr.as_str()).await {
+pub async fn process(client: TcpStream, proxy: Arc<Proxy>) {
+    let (back_tfc, back_addr) = proxy.fatest_backend();
+    let back_tfc2 = Arc::clone(&back_tfc);
+    let (mut client_r, mut client_w) = tokio::io::split(client);
+
+    let back_stream = match TcpStream::connect(back_addr.as_str()).await {
         Ok(s) => s,
         Err(e) => {
             error!("process failed when build connection with {back_addr}: {e}");
             return;
         }
     };
+    let (mut back_r, mut back_w) = tokio::io::split(back_stream);
     trace!("connected to backend {back_addr}");
 
-    loop {
-        tokio::select! {
-            Ok(n) = socket.read(&mut s_buf) => {
-                if n == 0 {
-                    trace!("client has reached EOF");
+    let mut tasks = Vec::with_capacity(2);
+
+    tasks.push(tokio::spawn(async move {
+        let mut buf = [0; BUF_LENGTH];
+        loop {
+            match back_r.read(&mut buf).await {
+                Ok(n) => {
+                    if n == 0 {
+                        trace!("backend has reached EOF");
+                        break;
+                    }
+                    if let Err(e) = client_w.write_all(&buf[..n]).await {
+                        warn!("write data from backend to client error: {e}");
+                        break;
+                    }
+                    back_tfc2.recv.fetch_add(n as u64, Ordering::SeqCst);
+                }
+                Err(e) => {
+                    warn!("backend read error: {e}");
                     break;
                 }
-                trace!("read data from client");
-                if let Err(e) = back_stream.write(&s_buf[..n]).await {
-                    warn!("write data from client to backend error: {e}");
-                    break;
-                }
-            back_tfc.send.fetch_add(n as u64 ,Ordering::SeqCst);
-            }
-            Ok(n) = back_stream.read(&mut b_buf) => {
-                if n == 0 {
-                    trace!("backend has reached EOF");
-                    break;
-                }
-                trace!("read data from backend");
-                if let Err(e) = socket.write(&b_buf[..n]).await {
-                    warn!("write data from back_end to client error: {e}");
-                    break;
-                }
-            back_tfc.recv.fetch_add(n as u64,Ordering::SeqCst);
-            }
-            else => {
-                warn!("client or backend read error");
-                break
             }
         }
+    }));
+
+    tasks.push(tokio::spawn(async move {
+        let mut buf = [0; BUF_LENGTH];
+        loop {
+            match client_r.read(&mut buf).await {
+                Ok(n) => {
+                    if n == 0 {
+                        trace!("client has reached EOF");
+                        break;
+                    }
+                    if let Err(e) = back_w.write_all(&buf[..n]).await {
+                        warn!("write data from client to backend error: {e}");
+                        break;
+                    }
+                    back_tfc.send.fetch_add(n as u64, Ordering::SeqCst);
+                }
+                Err(e) => {
+                    warn!("client read error: {e}");
+                    break;
+                }
+            }
+        }
+    }));
+
+    for t in tasks {
+        t.await.unwrap();
     }
 }
