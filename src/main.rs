@@ -79,16 +79,16 @@ async fn main() {
             loop {
                 // The second item contains the IP and port of the new connection.
                 if let Ok((socket, addr)) = listener.accept().await {
-                    debug!("accepted a connection from {addr}");
+                    let uuid = Arc::new(uuid::Uuid::new_v4());
+                    debug!("[{uuid}] accepted a connection from {addr}");
                     let p = Arc::clone(&p2);
                     tokio::spawn(async move {
-                        proxy::process(socket, p).await;
+                        proxy::process(socket, p, uuid).await;
                     });
                 }
             }
         });
     }
-    //let ps = Arc::new(proxy::Proxys(Vec::new()));
     let ps = Arc::clone(&proxys);
     let monitor = warp::path("status").map(move || ps.status());
     warp::serve(monitor)
