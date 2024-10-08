@@ -2,7 +2,7 @@ use log::{debug, error, trace, warn};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::vec;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadHalf, WriteHalf};
 use tokio::net::TcpStream;
 use tokio::time::{timeout, Duration, Instant};
 
@@ -11,6 +11,9 @@ static REQ_HEADER: &[u8] = b"GET / HTTP/1.0\nHOST: 127.0.0.1\n\n";
 
 //response "HTTP/1.1 200 OK"
 static RESP_EXPECT: &[u8] = b"HTTP/1.1 200 OK";
+
+static CLIENT: &str = "client";
+static BACKEND: &str = "backend";
 
 const BUF_LENGTH: usize = 65536;
 
@@ -140,9 +143,7 @@ pub async fn process(client: TcpStream, proxy: Arc<Proxy>, uuid: Arc<uuid::Uuid>
         String::from("UNKNOWN")
     });
     let peer_addr2 = Arc::clone(&peer_addr);
-    let (mut client_r, mut client_w) = tokio::io::split(client);
-    let notify_close = Arc::new(tokio::sync::Notify::new());
-    let notify_close2 = Arc::clone(&notify_close);
+    let (client_r, client_w) = tokio::io::split(client);
 
     let back_stream = match TcpStream::connect(back_addr.as_str()).await {
         Ok(s) => s,
@@ -151,80 +152,51 @@ pub async fn process(client: TcpStream, proxy: Arc<Proxy>, uuid: Arc<uuid::Uuid>
             return;
         }
     };
-    let (mut back_r, mut back_w) = tokio::io::split(back_stream);
     debug!("[{uuid}] connected to backend {back_addr}");
+    let (back_r, back_w) = tokio::io::split(back_stream);
 
-    let mut tasks = Vec::with_capacity(2);
+    let _ = tokio::try_join!(
+        read_write(uuid, back_r, client_w, peer_addr, back_addr, back_tfc, BACKEND),
+        read_write(uuid2, client_r, back_w, peer_addr2, back_addr2, back_tfc2, CLIENT)
+    )
+    .is_ok();
+}
 
-    tasks.push(tokio::spawn(async move {
-        let mut buf = [0; BUF_LENGTH];
-        loop {
-            tokio::select!{
-                _ = notify_close.notified() => {
-                    debug!("[{uuid}] notify backend to close");
-                    break;
+async fn read_write<T>(
+    uuid: Arc<uuid::Uuid>,
+    mut from: ReadHalf<T>,
+    mut to: WriteHalf<T>,
+    from_addr: Arc<String>,
+    to_addr: Arc<String>,
+    traffic: Arc<Traffic>,
+    dir: &'static str,
+) -> Result<(), ()>
+where
+    T: AsyncRead + AsyncWrite,
+{
+    let mut buf = [0; BUF_LENGTH];
+    let counter = if dir == CLIENT {
+        &traffic.send
+    } else {
+        &traffic.recv
+    };
+    loop {
+        match from.read(&mut buf).await {
+            Ok(n) => {
+                if n == 0 {
+                    debug!("[{uuid}] [{from_addr}--{to_addr}] {dir} has reached EOF");
+                    return Err(());
                 }
-                r = back_r.read(&mut buf) => {
-                    match r {
-                        Ok(n) => {
-                            if n == 0 {
-                                debug!("[{uuid}] [{peer_addr}--{back_addr}] backend has reached EOF");
-                                notify_close.notify_one();
-                                break;
-                            }
-                            if let Err(e) = client_w.write_all(&buf[..n]).await {
-                                warn!("[{uuid}] [{peer_addr}--{back_addr}] write data(len: {n}) from backend to client error: {e}");
-                                notify_close.notify_one();
-                                break;
-                            }
-                            back_tfc2.recv.fetch_add(n as u64, Ordering::SeqCst);
-                        }
-                        Err(e) => {
-                            warn!("[{uuid}] [{peer_addr}--{back_addr}] backend read error: {e}");
-                            notify_close.notify_one();
-                            break;
-                        }
-                    }
+                if let Err(e) = to.write_all(&buf[..n]).await {
+                    warn!("[{uuid}] [{from_addr}--{to_addr}] write data(len: {n}) from {dir} error: {e}");
+                    return Err(());
                 }
+                counter.fetch_add(n as u64, Ordering::SeqCst);
+            }
+            Err(e) => {
+                warn!("[{uuid}] [{from_addr}--{to_addr}] {dir} read error: {e}");
+                return Err(());
             }
         }
-    }));
-
-    tasks.push(tokio::spawn(async move {
-        let mut buf = [0; BUF_LENGTH];
-        loop {
-                tokio::select!{
-                _ = notify_close2.notified() => {
-                    debug!("[{uuid2}] notify client to close");
-                    break;
-                }
-                r = client_r.read(&mut buf) => {
-                    match r {
-                        Ok(n) => {
-                            if n == 0 {
-                                debug!("[{uuid2}] [{peer_addr2}--{back_addr2}] client has reached EOF");
-                                notify_close2.notify_one();
-                                break;
-                            }
-                            if let Err(e) = back_w.write_all(&buf[..n]).await {
-                                warn!("[{uuid2}] [{peer_addr2}--{back_addr2}] write data(len: {n}) from client to backend error: {e}");
-                                notify_close2.notify_one();
-                                break;
-                            }
-                            back_tfc.send.fetch_add(n as u64, Ordering::SeqCst);
-                        }
-                        Err(e) => {
-                            warn!("[{uuid2}] [{peer_addr2}--{back_addr2}] client read error: {e}");
-                            notify_close2.notify_one();
-                            break;
-                        }
-                    }
-                }
-            }
-        }
-    }));
-
-    for t in tasks {
-        t.await.unwrap();
     }
 }
