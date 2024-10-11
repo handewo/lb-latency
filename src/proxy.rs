@@ -28,6 +28,8 @@ pub struct Proxy {
 pub struct Traffic {
     pub send: AtomicU64,
     pub recv: AtomicU64,
+    pub total_requests: AtomicU64,
+    pub failed_requests: AtomicU64,
 }
 
 impl Proxy {
@@ -103,10 +105,12 @@ impl Proxy {
             let addr = Arc::clone(&self.backend_addrs[i]);
             res.push_str(
                 format!(
-                    "{{\"{}\":{{\"send\":{},\"recv\":{},\"last_latency\":{}}}}},",
+                    "{{\"{}\":{{\"send\":{},\"recv\":{},\"total_requests\":{},\"failed_requests\":{},\"last_latency\":{}}}}},",
                     addr,
                     t.send.load(Ordering::SeqCst),
                     t.recv.load(Ordering::SeqCst),
+                    t.total_requests.load(Ordering::SeqCst),
+                    t.failed_requests.load(Ordering::SeqCst),
                     self.last_latency[i].load(Ordering::SeqCst)
                 )
                 .as_str(),
@@ -146,9 +150,13 @@ pub async fn process(client: TcpStream, proxy: Arc<Proxy>, uuid: Arc<uuid::Uuid>
     let (client_r, client_w) = tokio::io::split(client);
 
     let back_stream = match TcpStream::connect(back_addr.as_str()).await {
-        Ok(s) => s,
+        Ok(s) => {
+            back_tfc.total_requests.fetch_add(1, Ordering::SeqCst);
+            s
+        }
         Err(e) => {
             error!("[{uuid}] process failed when build connection with {back_addr}: {e}");
+            back_tfc.failed_requests.fetch_add(1, Ordering::SeqCst);
             return;
         }
     };
@@ -188,12 +196,14 @@ where
                     return Err(());
                 }
                 if let Err(e) = to.write_all(&buf[..n]).await {
+                    traffic.failed_requests.fetch_add(1, Ordering::SeqCst);
                     warn!("[{uuid}] [{from_addr}--{to_addr}] write data(len: {n}) from {dir} error: {e}");
                     return Err(());
                 }
                 counter.fetch_add(n as u64, Ordering::SeqCst);
             }
             Err(e) => {
+                traffic.failed_requests.fetch_add(1, Ordering::SeqCst);
                 warn!("[{uuid}] [{from_addr}--{to_addr}] {dir} read error: {e}");
                 return Err(());
             }

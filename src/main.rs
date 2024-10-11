@@ -49,6 +49,8 @@ async fn main() {
             back_traffic.push(Arc::new(proxy::Traffic {
                 send: AtomicU64::new(0),
                 recv: AtomicU64::new(0),
+                total_requests: AtomicU64::new(0),
+                failed_requests: AtomicU64::new(0),
             }));
             last_latency.push(AtomicU64::new(0))
         }
