@@ -1,4 +1,5 @@
 use log::{debug, error, trace, warn};
+use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::vec;
@@ -20,8 +21,8 @@ const BUF_LENGTH: usize = 65536;
 pub struct Proxy {
     pub frontend: String,
     pub index: AtomicUsize,
-    pub backend_addrs: Vec<Arc<String>>,
-    pub back_traffic: Vec<Arc<Traffic>>,
+    pub backend_addrs: Vec<SocketAddr>,
+    pub back_traffic: Vec<Traffic>,
     pub last_latency: Vec<AtomicU64>,
 }
 
@@ -32,77 +33,85 @@ pub struct Traffic {
     pub failed_requests: AtomicU64,
 }
 
-impl Proxy {
-    pub fn fatest_backend(&self) -> (Arc<Traffic>, Arc<String>) {
+impl<'a> Proxy {
+    pub fn fatest_backend(&self) -> (&Traffic, &SocketAddr) {
         let index = self.index.load(Ordering::SeqCst);
 
         (
-            Arc::clone(&self.back_traffic[index]),
-            Arc::clone(&self.backend_addrs[index]),
+            self.back_traffic.get(index).unwrap(),
+            self.backend_addrs.get(index).unwrap(),
         )
     }
 
-    pub async fn check_latency(&self, check_timout: u64) {
-        let mut tasks = Vec::with_capacity(self.backend_addrs.len());
-        for addr in self.backend_addrs.iter() {
-            let addr = Arc::clone(addr);
-            tasks.push(tokio::spawn(timeout(
-                Duration::from_secs(check_timout),
-                async move {
-                    let start = Instant::now();
-                    let mut stream = match TcpStream::connect(addr.as_str()).await {
-                        Ok(s) => s,
-                        Err(e) => {
-                            warn!("check failed when build connection with {addr}: {e}");
+    pub async fn check_latency(&self, check_timout: u64, check_interval: u64) {
+        let backend_addrs: Vec<Arc<SocketAddr>> = self
+            .backend_addrs
+            .iter()
+            .map(|addr| Arc::new(*addr))
+            .collect();
+        loop {
+            let mut tasks = Vec::with_capacity(self.backend_addrs.len());
+            for addr in backend_addrs.iter() {
+                let addr = addr.clone();
+                tasks.push(tokio::spawn(timeout(
+                    Duration::from_secs(check_timout),
+                    async move {
+                        let start = Instant::now();
+                        let mut stream = match TcpStream::connect(addr.as_ref()).await {
+                            Ok(s) => s,
+                            Err(e) => {
+                                warn!("check failed when build connection with {addr}: {e}");
+                                return u64::MAX;
+                            }
+                        };
+                        stream.write_all(REQ_HEADER).await.unwrap_or_else(|e| {
+                            warn!("check falied when send request to {addr}: {e}")
+                        });
+                        let mut buf = vec![0; 256];
+                        if let Err(e) = stream.read(&mut buf).await {
+                            warn!("read error when check {addr}: {e}");
                             return u64::MAX;
+                        };
+                        let duration = start.elapsed().as_micros() as u64;
+                        trace!("{duration}us is elapsed when trying to connect to {addr}");
+                        if &buf[..15] == RESP_EXPECT {
+                            trace!("response from {addr} is expected");
+                            return duration;
                         }
-                    };
-                    stream
-                        .write_all(REQ_HEADER)
-                        .await
-                        .unwrap_or_else(|e| warn!("check falied when send request to {addr}: {e}"));
-                    let mut buf = vec![0; 256];
-                    if let Err(e) = stream.read(&mut buf).await {
-                        warn!("read error when check {addr}: {e}");
-                        return u64::MAX;
-                    };
-                    let duration = start.elapsed().as_micros() as u64;
-                    trace!("{duration}us is elapsed when trying to connect to {addr}");
-                    if &buf[..15] == RESP_EXPECT {
-                        trace!("response from {addr} is expected");
-                        return duration;
-                    }
-                    u64::MAX
-                },
-            )));
-        }
-        let mut min_dur = u64::MAX;
-        let mut min_i = self.index.load(Ordering::SeqCst);
-        let ori_i = min_i;
-        for (i, task) in tasks.into_iter().enumerate() {
-            let dur = task.await.unwrap().unwrap_or_else(|_| {
-                warn!("check backend: {} timeout", self.backend_addrs[i]);
-                u64::MAX
-            });
-            self.last_latency[i].store(dur, Ordering::SeqCst);
-            if dur < min_dur {
-                min_i = i;
-                min_dur = dur;
+                        u64::MAX
+                    },
+                )));
             }
-        }
+            let mut min_dur = u64::MAX;
+            let mut min_i = self.index.load(Ordering::SeqCst);
+            let ori_i = min_i;
+            for (i, task) in tasks.into_iter().enumerate() {
+                let dur = task.await.unwrap().unwrap_or_else(|_| {
+                    warn!("check backend: {} timeout", backend_addrs[i]);
+                    u64::MAX
+                });
+                self.last_latency[i].store(dur, Ordering::SeqCst);
+                if dur < min_dur {
+                    min_i = i;
+                    min_dur = dur;
+                }
+            }
 
-        if min_dur != u64::MAX && min_i != ori_i {
-            self.index.store(min_i, Ordering::SeqCst);
-            debug!("{} switch to faster backend {min_i}", self.frontend);
+            if min_dur != u64::MAX && min_i != ori_i {
+                self.index.store(min_i, Ordering::SeqCst);
+                debug!("{} switch to faster backend {min_i}", self.frontend);
+            }
+
+            tokio::time::sleep(tokio::time::Duration::from_secs(check_interval)).await;
         }
     }
 
     pub fn status(&self) -> String {
         let index = self.index.load(Ordering::SeqCst);
-        let active = Arc::clone(&self.backend_addrs[index]);
+        let active = self.backend_addrs.get(index).unwrap();
         let mut res = format!("{{\"active\":\"{}\",\"{}\":[", active, self.frontend);
         for (i, t) in self.back_traffic.iter().enumerate() {
-            let addr = Arc::clone(&self.backend_addrs[i]);
+            let addr = self.backend_addrs.get(i).unwrap();
             res.push_str(
                 format!(
                     "{{\"{}\":{{\"send\":{},\"recv\":{},\"total_requests\":{},\"failed_requests\":{},\"last_latency\":{}}}}},",
@@ -137,19 +146,14 @@ impl Proxys {
 }
 
 pub async fn process(client: TcpStream, proxy: Arc<Proxy>, uuid: Arc<uuid::Uuid>) {
-    let uuid2 = Arc::clone(&uuid);
     let (back_tfc, back_addr) = proxy.fatest_backend();
-    let back_tfc2 = Arc::clone(&back_tfc);
-    let back_addr2 = Arc::clone(&back_addr);
-    let peer_addr = Arc::new(if let Ok(addr) = client.peer_addr() {
-        addr.to_string()
-    } else {
-        String::from("UNKNOWN")
-    });
-    let peer_addr2 = Arc::clone(&peer_addr);
+    let peer_addr = match client.peer_addr() {
+        Ok(addr) => addr.to_string(),
+        Err(_) => String::from("UNKNOWN"),
+    };
     let (client_r, client_w) = tokio::io::split(client);
 
-    let back_stream = match TcpStream::connect(back_addr.as_str()).await {
+    let back_stream = match TcpStream::connect(back_addr).await {
         Ok(s) => {
             back_tfc.total_requests.fetch_add(1, Ordering::SeqCst);
             s
@@ -164,19 +168,19 @@ pub async fn process(client: TcpStream, proxy: Arc<Proxy>, uuid: Arc<uuid::Uuid>
     let (back_r, back_w) = tokio::io::split(back_stream);
 
     let _ = tokio::try_join!(
-        read_write(uuid, back_r, client_w, peer_addr, back_addr, back_tfc, BACKEND),
-        read_write(uuid2, client_r, back_w, peer_addr2, back_addr2, back_tfc2, CLIENT)
+        read_write(&uuid, back_r, client_w, &peer_addr, back_addr, back_tfc, BACKEND),
+        read_write(&uuid, client_r, back_w, &peer_addr, back_addr, back_tfc, CLIENT)
     )
     .is_ok();
 }
 
 async fn read_write<T>(
-    uuid: Arc<uuid::Uuid>,
+    uuid: &uuid::Uuid,
     mut from: ReadHalf<T>,
     mut to: WriteHalf<T>,
-    from_addr: Arc<String>,
-    to_addr: Arc<String>,
-    traffic: Arc<Traffic>,
+    from_addr: &str,
+    to_addr: &SocketAddr,
+    traffic: &Traffic,
     dir: &'static str,
 ) -> Result<(), ()>
 where

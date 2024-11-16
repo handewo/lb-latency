@@ -45,13 +45,13 @@ async fn main() {
         let mut back_traffic = Vec::with_capacity(len_addrs);
         let mut last_latency = Vec::with_capacity(len_addrs);
         for addr in pc.backend_addrs.iter() {
-            backend_addrs.push(Arc::new(addr.clone()));
-            back_traffic.push(Arc::new(proxy::Traffic {
+            backend_addrs.push(addr.parse().unwrap());
+            back_traffic.push(proxy::Traffic {
                 send: AtomicU64::new(0),
                 recv: AtomicU64::new(0),
                 total_requests: AtomicU64::new(0),
                 failed_requests: AtomicU64::new(0),
-            }));
+            });
             last_latency.push(AtomicU64::new(0))
         }
 
@@ -68,10 +68,7 @@ async fn main() {
     for proxy in proxys.0.iter() {
         let p = Arc::clone(proxy);
         tokio::spawn(async move {
-            loop {
-                p.check_latency(cfg.check_timeout).await;
-                tokio::time::sleep(tokio::time::Duration::from_secs(cfg.check_interval)).await
-            }
+            p.check_latency(cfg.check_timeout, cfg.check_interval).await;
         });
         let p2 = Arc::clone(proxy);
         let addr = p2.frontend.clone();
