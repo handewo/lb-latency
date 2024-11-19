@@ -1,6 +1,6 @@
 use chrono::Local;
 use dashmap::DashMap;
-use log::{debug, error, trace, warn};
+use log::{debug, trace, warn};
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -118,7 +118,10 @@ impl Proxy {
     pub fn status(&self) -> String {
         let index = self.index.load(Ordering::SeqCst);
         let active = self.backend_addrs.get(index).unwrap();
-        let mut res = format!("{{\"active\":\"{}\",\"{}\":[", active, self.frontend);
+        let mut res = format!(
+            "{{\"active\":\"{}\",\"proxy\":\"{}\",\"backend\":[",
+            active, self.frontend
+        );
         for (i, t) in self.back_traffic.iter().enumerate() {
             let addr = self.backend_addrs.get(i).unwrap();
             res.push_str(
@@ -188,7 +191,7 @@ pub async fn process(client: TcpStream, proxy: Arc<Proxy>, uuid: Arc<uuid::Uuid>
             s
         }
         Err(e) => {
-            error!("[{uuid}] process failed when build connection with {back_addr}: {e}");
+            warn!("[{uuid}] process failed when build connection with {back_addr}: {e}");
             back_tfc.failed_requests.fetch_add(1, Ordering::SeqCst);
             return;
         }
