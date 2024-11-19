@@ -1,3 +1,5 @@
+use chrono::Local;
+use dashmap::DashMap;
 use log::{debug, error, trace, warn};
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
@@ -24,6 +26,7 @@ pub struct Proxy {
     pub backend_addrs: Vec<SocketAddr>,
     pub back_traffic: Vec<Traffic>,
     pub last_latency: Vec<AtomicU64>,
+    pub conns: DashMap<String, Conn>,
 }
 
 pub struct Traffic {
@@ -33,7 +36,13 @@ pub struct Traffic {
     pub failed_requests: AtomicU64,
 }
 
-impl<'a> Proxy {
+#[derive(Hash, PartialEq, Eq)]
+pub struct Conn {
+    start: String,
+    backend: SocketAddr,
+}
+
+impl Proxy {
     pub fn fatest_backend(&self) -> (&Traffic, &SocketAddr) {
         let index = self.index.load(Ordering::SeqCst);
 
@@ -126,7 +135,22 @@ impl<'a> Proxy {
             );
         }
         res.pop();
-        res.push_str("]},");
+        res.push_str("],\"current_conn\":[");
+        for conn in self.conns.iter() {
+            res.push_str(
+                format!(
+                    "{{\"start\":\"{}\",\"client\":\"{}\",\"backend\":\"{}\"}},",
+                    conn.start,
+                    conn.key(),
+                    conn.backend
+                )
+                .as_str(),
+            );
+        }
+        match res.pop().unwrap() {
+            '[' => res.push_str("[]},"),
+            _ => res.push_str("]},"),
+        }
         res
     }
 }
@@ -152,10 +176,15 @@ pub async fn process(client: TcpStream, proxy: Arc<Proxy>, uuid: Arc<uuid::Uuid>
         Err(_) => String::from("UNKNOWN"),
     };
     let (client_r, client_w) = tokio::io::split(client);
+    let conn = Conn {
+        start: Local::now().format("%d/%m/%y %H:%M:%S").to_string(),
+        backend: *back_addr,
+    };
 
     let back_stream = match TcpStream::connect(back_addr).await {
         Ok(s) => {
             back_tfc.total_requests.fetch_add(1, Ordering::SeqCst);
+            proxy.conns.insert(peer_addr.clone(), conn);
             s
         }
         Err(e) => {
@@ -172,6 +201,7 @@ pub async fn process(client: TcpStream, proxy: Arc<Proxy>, uuid: Arc<uuid::Uuid>
         read_write(&uuid, client_r, back_w, &peer_addr, back_addr, back_tfc, CLIENT)
     )
     .is_ok();
+    proxy.conns.remove(&peer_addr);
 }
 
 async fn read_write<T>(

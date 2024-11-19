@@ -1,5 +1,6 @@
 use chrono::Local;
 use clap::Parser;
+use dashmap::DashMap;
 use log::{debug, error, info};
 use std::io::Write;
 use std::net::SocketAddr;
@@ -61,6 +62,7 @@ async fn main() {
             backend_addrs,
             back_traffic,
             last_latency,
+            conns: DashMap::new(),
         }));
     }
     let proxys: Arc<proxy::Proxys> = Arc::new(proxy::Proxys(proxys));
