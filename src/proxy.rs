@@ -192,6 +192,7 @@ pub async fn process(client: TcpStream, proxy: Arc<Proxy>, uuid: Arc<uuid::Uuid>
         }
         Err(e) => {
             warn!("[{uuid}] process failed when build connection with {back_addr}: {e}");
+            back_tfc.total_requests.fetch_add(1, Ordering::SeqCst);
             back_tfc.failed_requests.fetch_add(1, Ordering::SeqCst);
             return;
         }
